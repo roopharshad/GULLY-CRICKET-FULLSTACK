@@ -1,0 +1,28 @@
+##############################################################
+#  render.yaml — Deploy GullyCricket backend to Render.com
+#  Free tier: render.com → New → Blueprint → point to repo
+##############################################################
+
+services:
+  - type: web
+    name: gully-cricket-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000          # Render uses port 10000 by default
+      - key: SUPABASE_URL
+        sync: false           # Set in Render dashboard
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false           # Set in Render dashboard (secret)
+      - key: SUPABASE_ANON_KEY
+        sync: false           # Set in Render dashboard
+      - key: ADMIN_SECRET
+        sync: false           # Set in Render dashboard (secret)
+      - key: ALLOWED_ORIGINS
+        sync: false           # e.g. https://your-site.netlify.app
+    healthCheckPath: /health
