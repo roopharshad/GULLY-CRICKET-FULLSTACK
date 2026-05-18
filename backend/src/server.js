@@ -100,6 +100,15 @@ wss.on('connection', (ws, req) => {
   // Send a welcome ping with current server time
   ws.send(JSON.stringify({ type: 'connected', ts: Date.now() }));
 
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data);
+      if (msg.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+      }
+    } catch (_) {}
+  });
+
   ws.on('close', () => {
     console.log(`[WS] client disconnected — ${ip} (total: ${wss.clients.size})`);
   });
