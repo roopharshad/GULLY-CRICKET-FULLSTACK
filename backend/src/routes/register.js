@@ -49,21 +49,20 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 3. Add player stats record
-    if (player) {
+    // 3. Add player stats record (only if not already there)
+    const { data: existingPlayer } = await supabase
+      .from('players').select('id').eq('name', name).eq('team', team).single();
+    if (!existingPlayer) {
       const pRow = {
         name,
         team,
-        role:       player.role      || role || 'Batsman',
+        role:       (player && player.role) || role || 'Batsman',
         matches:    0, runs: 0, balls: 0, wickets: 0,
         avg:        '0.0', sr: '0.0',
-        color:      player.color     || '#64748b',
+        color:      (player && player.color) || '#64748b',
         fours: 0, sixes: 0, bowl_balls: 0, bowl_runs: 0,
       };
-      await supabase.from('players').upsert(pRow, { onConflict: 'name,team' }).catch(() => {
-        // If no unique constraint on name+team, just insert
-        return supabase.from('players').insert(pRow);
-      });
+      await supabase.from('players').insert(pRow);
     }
 
     // Broadcast update to all connected clients
