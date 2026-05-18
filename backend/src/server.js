@@ -22,12 +22,13 @@ const rateLimit = require('express-rate-limit');
 const supabase  = require('./config/supabase');
 const broadcast = require('./services/broadcast');
 
-const appDataRouter = require('./routes/appData');
-const playersRouter = require('./routes/players');
-const teamsRouter   = require('./routes/teams');
-const matchesRouter = require('./routes/matches');
-const usersRouter   = require('./routes/users');
-const adminRouter   = require('./routes/admin');
+const appDataRouter  = require('./routes/appData');
+const playersRouter  = require('./routes/players');
+const teamsRouter    = require('./routes/teams');
+const matchesRouter  = require('./routes/matches');
+const usersRouter    = require('./routes/users');
+const adminRouter    = require('./routes/admin');
+const registerRouter = require('./routes/register');
 
 // ── App ───────────────────────────────────────────────────────────────────────
 const app = express();
@@ -67,12 +68,13 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use('/api/data',    appDataRouter);
-app.use('/api/players', playersRouter);
-app.use('/api/teams',   teamsRouter);
-app.use('/api/matches', matchesRouter);
-app.use('/api/users',   usersRouter);
-app.use('/api/admin',   adminRouter);
+app.use('/api/data',     appDataRouter);
+app.use('/api/players',  playersRouter);
+app.use('/api/teams',    teamsRouter);
+app.use('/api/matches',  matchesRouter);
+app.use('/api/users',    usersRouter);
+app.use('/api/admin',    adminRouter);
+app.use('/api/register', registerRouter);
 
 // Health check
 app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
