@@ -1,7 +1,7 @@
 /**
  * routes/appData.js
- * GET  /api/data          — fetch merged app data (match, schedule, banners, scorecards)
- * PUT  /api/data          — update app_data blob (admin only)
+ * GET  /api/data  — fetch ALL data from Supabase (players, teams, matches, app config)
+ * PUT  /api/data  — save live match state only (admin)
  */
 
 const router    = require('express').Router();
@@ -10,161 +10,117 @@ const { requireAdmin } = require('../middleware/auth');
 const broadcast = require('../services/broadcast');
 
 // ── GET /api/data ─────────────────────────────────────────────────────────────
+// This is the SINGLE endpoint all devices call to get fresh data from Supabase
 router.get('/', async (req, res) => {
   try {
-    const [appRes, playersRes, teamsRes, matchesRes] = await Promise.all([
+    // Fetch all tables in parallel — each query is independent and won't fail others
+    const results = await Promise.allSettled([
       supabase.from('app_data').select('data').eq('id', 'main').single(),
       supabase.from('players').select('*').order('runs', { ascending: false }),
       supabase.from('teams').select('*').order('won', { ascending: false }),
       supabase.from('matches').select('*').order('id', { ascending: false }),
     ]);
 
-    if (appRes.error) throw appRes.error;
+    // Extract data safely — if any query fails, use empty array
+    const appData  = results[0].status === 'fulfilled' ? (results[0].value.data?.data || {}) : {};
+    const playersRaw = results[1].status === 'fulfilled' ? (results[1].value.data || []) : [];
+    const teamsRaw   = results[2].status === 'fulfilled' ? (results[2].value.data || []) : [];
+    const matchesRaw = results[3].status === 'fulfilled' ? (results[3].value.data || []) : [];
 
-    const appData = appRes.data?.data || {};
+    // Log what we are returning so we can debug
+    console.log(`[GET /api/data] players:${playersRaw.length} teams:${teamsRaw.length} matches:${matchesRaw.length}`);
 
-    const players = (playersRes.data || []).map(p => ({
+    const players = playersRaw.map(p => ({
       id:        p.id,
       name:      p.name,
       team:      p.team,
-      role:      p.role,
-      matches:   p.matches,
-      runs:      p.runs,
-      balls:     p.balls,
-      wickets:   p.wickets,
-      avg:       p.avg,
-      sr:        p.sr,
-      color:     p.color,
-      fours:     p.fours,
-      sixes:     p.sixes,
-      bowlBalls: p.bowl_balls,
-      bowlRuns:  p.bowl_runs,
+      role:      p.role        || 'Batsman',
+      matches:   p.matches     || 0,
+      runs:      p.runs        || 0,
+      balls:     p.balls       || 0,
+      wickets:   p.wickets     || 0,
+      avg:       p.avg         || '0.0',
+      sr:        p.sr          || '0.0',
+      color:     p.color       || '#64748b',
+      fours:     p.fours       || 0,
+      sixes:     p.sixes       || 0,
+      bowlBalls: p.bowl_balls  || 0,
+      bowlRuns:  p.bowl_runs   || 0,
     }));
 
-    const teams = (teamsRes.data || []).map(t => ({
+    const teams = teamsRaw.map(t => ({
       id:      t.id,
       name:    t.name,
-      emoji:   t.emoji,
-      color:   t.color,
-      played:  t.played,
-      won:     t.won,
-      lost:    t.lost,
-      nr:      t.nr,
-      nrr:     t.nrr,
-      captain: t.captain,
-      code:    t.team_code,
-      players: t.players || [],
+      emoji:   t.emoji         || '🏏',
+      color:   t.color         || '#64748b',
+      played:  t.played        || 0,
+      won:     t.won           || 0,
+      lost:    t.lost          || 0,
+      nr:      t.nr            || 0,
+      nrr:     t.nrr           || '0.00',
+      captain: t.captain       || '',
+      code:    t.team_code     || '',
+      players: t.players       || [],
     }));
 
-    const recentMatches = (matchesRes.data || []).map(m => ({
-      id:         m.id,
-      title:      m.title,
-      teams:      m.teams,
-      t1:         m.t1,
-      t2:         m.t2,
-      result:     m.result,
-      topScorer:  m.top_scorer,
-      status:     m.status,
-      batting1:   m.batting1 || [],
-      batting2:   m.batting2 || [],
-      bowling1:   m.bowling1 || [],
-      bowling2:   m.bowling2 || [],
+    const recentMatches = matchesRaw.map(m => ({
+      id:        m.id,
+      title:     m.title       || '',
+      teams:     m.teams       || '',
+      t1:        m.t1          || '',
+      t2:        m.t2          || '',
+      result:    m.result      || '',
+      topScorer: m.top_scorer  || '',
+      status:    m.status      || 'upcoming',
+      batting1:  m.batting1    || [],
+      batting2:  m.batting2    || [],
+      bowling1:  m.bowling1    || [],
+      bowling2:  m.bowling2    || [],
     }));
 
-    res.json({ ...appData, players, teams, recentMatches });
+    res.json({
+      ...appData,
+      players,
+      teams,
+      recentMatches,
+    });
+
   } catch (err) {
-    console.error('[GET /api/data]', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('[GET /api/data] fatal:', err.message);
+    // Return empty data rather than 500 — frontend will use cache
+    res.json({
+      players: [], teams: [], recentMatches: [],
+      liveMatch: null, schedule: [], banners: [],
+      battingScorecard: [], bowlingScorecard: [], matchState: null,
+    });
   }
 });
 
 // ── PUT /api/data ─────────────────────────────────────────────────────────────
+// ONLY saves live match state — players/teams use dedicated routes
 router.put('/', requireAdmin, async (req, res) => {
   const d = req.body;
-  if (!d || typeof d !== 'object') return res.status(400).json({ error: 'Body must be JSON object' });
+  if (!d || typeof d !== 'object') {
+    return res.status(400).json({ error: 'Body must be a JSON object' });
+  }
 
   try {
     const appBlob = {
-      liveMatch:         d.liveMatch         || null,
-      schedule:          d.schedule          || [],
-      banners:           d.banners           || [],
-      battingScorecard:  d.battingScorecard  || [],
-      bowlingScorecard:  d.bowlingScorecard  || [],
-      matchState:        d.matchState        || null,
+      liveMatch:        d.liveMatch        || null,
+      schedule:         d.schedule         || [],
+      banners:          d.banners          || [],
+      battingScorecard: d.battingScorecard || [],
+      bowlingScorecard: d.bowlingScorecard || [],
+      matchState:       d.matchState       || null,
     };
 
-    const { error: appErr } = await supabase
+    const { error } = await supabase
       .from('app_data')
       .upsert({ id: 'main', data: appBlob, updated_at: new Date().toISOString() });
-    if (appErr) throw appErr;
 
-    // Sync players
-    if (Array.isArray(d.players) && d.players.length) {
-      const rows = d.players.map(p => ({
-        ...(p.id ? { id: p.id } : {}),
-        name:       p.name,
-        team:       p.team       || '',
-        role:       p.role       || 'Batsman',
-        matches:    p.matches    || 0,
-        runs:       p.runs       || 0,
-        balls:      p.balls      || 0,
-        wickets:    p.wickets    || 0,
-        avg:        String(p.avg || '0.0'),
-        sr:         String(p.sr  || '0.0'),
-        color:      p.color      || '#64748b',
-        fours:      p.fours      || 0,
-        sixes:      p.sixes      || 0,
-        bowl_balls: p.bowlBalls  || 0,
-        bowl_runs:  p.bowlRuns   || 0,
-        updated_at: new Date().toISOString(),
-      }));
-      const { error: pErr } = await supabase.from('players').upsert(rows, { onConflict: 'id' });
-      if (pErr) throw pErr;
-    }
+    if (error) throw error;
 
-    // Sync teams
-    if (Array.isArray(d.teams) && d.teams.length) {
-      const rows = d.teams.map(t => ({
-        ...(t.id ? { id: t.id } : {}),
-        name:       t.name,
-        emoji:      t.emoji      || '🏏',
-        color:      t.color      || '#64748b',
-        played:     t.played     || 0,
-        won:        t.won        || 0,
-        lost:       t.lost       || 0,
-        nr:         t.nr         || 0,
-        nrr:        String(t.nrr || '0.00'),
-        captain:    t.captain    || '',
-        team_code:  t.code       || '',
-        players:    t.players    || [],
-        updated_at: new Date().toISOString(),
-      }));
-      const { error: tErr } = await supabase.from('teams').upsert(rows, { onConflict: 'id' });
-      if (tErr) throw tErr;
-    }
-
-    // Sync matches
-    if (Array.isArray(d.recentMatches) && d.recentMatches.length) {
-      const rows = d.recentMatches.map(m => ({
-        ...(m.id ? { id: m.id } : {}),
-        title:      m.title      || '',
-        teams:      m.teams      || '',
-        t1:         m.t1         || '',
-        t2:         m.t2         || '',
-        result:     m.result     || '',
-        top_scorer: m.topScorer  || '',
-        status:     m.status     || 'upcoming',
-        batting1:   m.batting1   || [],
-        batting2:   m.batting2   || [],
-        bowling1:   m.bowling1   || [],
-        bowling2:   m.bowling2   || [],
-        updated_at: new Date().toISOString(),
-      }));
-      const { error: mErr } = await supabase.from('matches').upsert(rows, { onConflict: 'id' });
-      if (mErr) throw mErr;
-    }
-
-    // Broadcast live update to all WebSocket clients
+    // Broadcast to all connected WebSocket clients
     broadcast.broadcast('data_updated', { ts: Date.now() });
 
     res.json({ ok: true });
